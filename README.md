@@ -48,7 +48,7 @@ Example pragma output:
 
 ```c
 #pragma comment(linker,"/export:ExportFunction=Pathofthedll.ExportFunction,@99")
-#pragma comment(linker,"/export:SomeFunction=SomeFunction,@12")
+#pragma comment(linker,"/export:SomeFunction=Pathofthedll.SomeFunction,@12")
 ```
 
 Generate stub C++ file (produces: `yourdll_stubs.cpp`):
