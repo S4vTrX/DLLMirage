@@ -41,7 +41,7 @@ cd DLLMirage
 Generate a pragma header (produces: `yourdll_pragmas.h`):
 
 ```bash
-python dll_fwd_lief.py --dll C:\Windows\System32\wdscore.dll --pragmas
+python DLLMirage.py --dll C:\Windows\System32\wdscore.dll --pragmas
 ```
 
 Example pragma output:
