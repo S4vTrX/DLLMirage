@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DLL Reverse Proxy Generator (LIEF) - safe pragmas & stubs generator
+DLLMirage.py - LIEF-based DLL proxy generator (safe, per-DLL output)
 
 Generates:
   1) Pragmas header:
@@ -8,13 +8,17 @@ Generates:
 
   2) Stub .cpp:
         extern "C" {
-            __declspec(dllexport) void Func() { ProxyFunction(); }
+            __declspec(dllexport) void Func() { /* optional MessageBoxA */ }
         }
+
+Extra:
+  - Output is written to: <output-dir>/<dll_basename>/*. (e.g. out/propsys/...)
+  - Use --mbox when generating stubs to inject a MessageBoxA call in each stub.
 
 Usage:
     python DLLMirage.py --dll some.dll --pragmas
-    python DLLMirage.py --dll some.dll --stubs
-    python DLLMirage.py --dll some.dll --both
+    python DLLMirage.py --dll some.dll --stubs --mbox
+    python DLLMirage.py --dll some.dll --both --mbox
 """
 
 import argparse
@@ -39,7 +43,7 @@ def configure_logging():
 
 # ---------------- Args ----------------
 def build_parser():
-    p = argparse.ArgumentParser(description="DLL Reverse Proxy Generator (LIEF)")
+    p = argparse.ArgumentParser(description="DLLMirage - DLL proxy generator (LIEF)")
 
     p.add_argument(
         "--dll",
@@ -57,6 +61,8 @@ def build_parser():
     mode.add_argument("--pragmas", action="store_true", help="Generate pragma header.")
     mode.add_argument("--stubs", action="store_true", help="Generate C++ stub file.")
     mode.add_argument("--both", action="store_true", help="Generate both pragma and stub files.")
+
+    p.add_argument("--mbox", action="store_true", help="(stubs) insert MessageBoxA showing the calling export name in each stub.")
 
     return p
 
@@ -108,10 +114,22 @@ def sanitize_identifier(name):
         s = "_" + s
     return s
 
+# ---------------- Helpers for output dir ----------------
+def make_dll_output_dir(base_outdir, dll_path):
+    """
+    Create and return the directory: <base_outdir>/<dll_basename_without_ext>
+    """
+    base = os.path.splitext(os.path.basename(dll_path))[0]
+    target_dir = os.path.join(base_outdir, base)
+    os.makedirs(target_dir, exist_ok=True)
+    return target_dir
+
 # ---------------- Generators ----------------
 def generate_pragmas(dll_path, outdir):
     base = os.path.splitext(os.path.basename(dll_path))[0]
-    outpath = os.path.join(outdir, f"{base}_pragmas.h")
+    # output subdir per DLL
+    target_dir = make_dll_output_dir(outdir, dll_path)
+    outpath = os.path.join(target_dir, f"{base}_pragmas.h")
 
     pe = lief.parse(dll_path)
     exports = get_exports(pe)
@@ -123,6 +141,7 @@ def generate_pragmas(dll_path, outdir):
     with open(outpath, "w") as f:
         f.write(f"// Pragmas for {dll_full}\n\n")
 
+        count = 0
         for e in exports:
             if is_forwarded(e):
                 continue
@@ -133,23 +152,30 @@ def generate_pragmas(dll_path, outdir):
             if not name or ordinal is None:
                 continue
 
-            # EXACT format you want:
-            f.write(
-                f'#pragma comment(linker,"/export:{name}={dll_escaped}.{name},@{ordinal}")\n'
-            )
-    logging.info(f"Generated pragma header → {outpath}")
+            # EXACT format requested:
+            f.write(f'#pragma comment(linker,"/export:{name}={dll_escaped}.{name},@{ordinal}")\n')
+            count += 1
 
-def generate_stubs(dll_path, outdir):
+    logging.info(f"Generated {count} pragmas -> {outpath}")
+
+
+def generate_stubs(dll_path, outdir, mbox=False):
     base = os.path.splitext(os.path.basename(dll_path))[0]
-    outpath = os.path.join(outdir, f"{base}_stubs.cpp")
+    target_dir = make_dll_output_dir(outdir, dll_path)
+    outpath = os.path.join(target_dir, f"{base}_stubs.cpp")
 
     pe = lief.parse(dll_path)
     exports = get_exports(pe)
 
-    with open(outpath, "w") as f:
-        f.write("// Stub source — exports call ProxyFunction()\n\n")
+    with open(outpath, "w", newline="\n") as f:
+        f.write("// Stub source — exports with optional MessageBoxA or ProxyFunction() call\n\n")
         f.write('#include <windows.h>\n')
-        f.write("extern void ProxyFunction();\n\n")
+        f.write('\n')
+        # Define ProxyFunction() - called by stubs when --mbox is NOT used
+        f.write('static void ProxyFunction() {\n')
+        f.write('    MessageBoxA(NULL, "Hello from Export", "ExportFunction", MB_OK);\n')
+        f.write('}\n\n')
+
         f.write('extern "C" {\n\n')
 
         count = 0
@@ -169,14 +195,20 @@ def generate_stubs(dll_path, outdir):
                 f.write(f'#pragma comment(linker,"/export:{name}={func},@{ordinal}")\n')
 
             f.write(f"__declspec(dllexport) void {func}() {{\n")
-            f.write("    ProxyFunction();\n")
+            if mbox:
+                # When --mbox is provided, show a MessageBox with the original export name
+                safe_text = name.replace('"', '\\"')
+                f.write(f'    MessageBoxA(NULL, "Hi From {safe_text}", "Export Function", MB_OK);\n')
+            else:
+                # Default behavior: call ProxyFunction()
+                f.write('    ProxyFunction();\n')
             f.write("}\n\n")
 
             count += 1
 
-        f.write("} // extern \"C\"\n")
+        f.write('} // extern "C"\n')
 
-    logging.info(f"Generated {count} stub functions → {outpath}")
+    logging.info(f"Generated {count} stub functions -> {outpath}")
 
 # ---------------- Main ----------------
 def main():
@@ -186,6 +218,7 @@ def main():
 
     dll_path = args.dll
     outdir = args.output_dir
+    use_mbox = args.mbox
 
     os.makedirs(outdir, exist_ok=True)
 
@@ -193,7 +226,7 @@ def main():
         generate_pragmas(dll_path, outdir)
 
     if args.stubs or args.both:
-        generate_stubs(dll_path, outdir)
+        generate_stubs(dll_path, outdir, mbox=use_mbox)
 
     logging.info("Completed.")
 
